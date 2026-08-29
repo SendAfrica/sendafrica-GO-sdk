@@ -138,6 +138,47 @@ func TestWebhookSignatureAndParse(t *testing.T) {
 	}
 }
 
+func TestListMessageLogs(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/sms/logs" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		gotQuery = r.URL.RawQuery
+		io.WriteString(w, `{"success":true,"data":{"items":[{"id":"ee24ab58-b578-4a0f-a7ac-387cf1c98a80","to_phone":"+255694157749","from_id":null,"message":"Hi","status":"sent","sms_parts":1,"credits_used":1,"campaign_id":null,"is_international":false,"cost_amount":33.0,"cost_currency":"TZS","sent_at":"2026-08-29T21:12:00Z","delivered_at":null,"created_at":"2026-08-29T21:12:00Z"}],"total":1,"page":1,"per_page":25,"total_pages":1},"request_id":"req-2"}`)
+	}))
+	defer srv.Close()
+
+	client := NewClient("SA-test", WithBaseURL(srv.URL+"/v1"), WithMaxRetries(0))
+	got, err := client.ListMessageLogs(context.Background(), MessageLogQuery{
+		Page:     1,
+		Status:   "sent",
+		Search:   "0694157749",
+		DateFrom: time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Total != 1 || len(got.Items) != 1 {
+		t.Fatalf("unexpected result: %+v", got)
+	}
+	item := got.Items[0]
+	if item.ToPhone != "+255694157749" {
+		t.Fatalf("ToPhone not decoded: %+v", item)
+	}
+	if item.SMSParts != 1 || item.CreditsUsed != 1 || item.Status != "sent" {
+		t.Fatalf("unexpected fields: %+v", item)
+	}
+	if item.CampaignID != nil {
+		t.Fatalf("null campaign_id should decode to nil pointer, got %+v", item)
+	}
+	for _, want := range []string{"status=sent", "search=0694157749", "date_from=2026-08-29T00%3A00%3A00Z", "page=1"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query %q missing expected segment %q", gotQuery, want)
+		}
+	}
+}
+
 func TestParseRetryAfter(t *testing.T) {
 	if parseRetryAfter("2") != 2*time.Second {
 		t.Fatal("expected seconds-form Retry-After")

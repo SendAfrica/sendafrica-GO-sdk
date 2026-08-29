@@ -417,9 +417,8 @@ type MessageLogQuery struct {
     Page     int
     PerPage  int
     Status   string
-    To       string
-    FromDate string
-    ToDate   string
+    Search   string
+    DateFrom time.Time
 }
 ```
 
@@ -430,23 +429,28 @@ Supported query fields map directly to the documented API filters:[5]
 | `Page` | `page` | Page number |
 | `PerPage` | `per_page` | Page size |
 | `Status` | `status` | `sent`, `pending`, `delivered`, `failed`, or another API status |
-| `To` | `to` | Recipient filter |
-| `FromDate` | `from_date` | Start date filter |
-| `ToDate` | `to_date` | End date filter |
+| `Search` | `search` | Recipient or message substring filter |
+| `DateFrom` | `date_from` | Start date filter (RFC 3339); only logs from this timestamp onward are returned |
 
 ### 9.2 Models
 
 ```go
 type MessageLog struct {
-    ID          string     `json:"id"`
-    Recipient   string     `json:"recipient"`
-    Message     string     `json:"message"`
-    Sender      string     `json:"sender"`
-    Status      string     `json:"status"`
-    CreditsUsed int        `json:"credits_used"`
-    CampaignID  *int       `json:"campaign_id"`
-    CreatedAt   time.Time  `json:"created_at"`
-    DeliveredAt *time.Time `json:"delivered_at"`
+    ID              string     `json:"id"`
+    ToPhone         string     `json:"to_phone"`
+    FromID          *string    `json:"from_id,omitempty"`
+    Message         string     `json:"message"`
+    Status          string     `json:"status"`
+    SMSParts        int        `json:"sms_parts"`
+    CreditsUsed     int        `json:"credits_used"`
+    CampaignID      *string    `json:"campaign_id,omitempty"`
+    IsInternational bool       `json:"is_international"`
+    CostAmount      *float64   `json:"cost_amount,omitempty"`
+    CostCurrency    *string    `json:"cost_currency,omitempty"`
+    ErrorReason     *string    `json:"error_reason,omitempty"`
+    SentAt          *time.Time `json:"sent_at,omitempty"`
+    DeliveredAt     *time.Time `json:"delivered_at,omitempty"`
+    CreatedAt       time.Time  `json:"created_at"`
 }
 
 type MessageLogs struct {

@@ -386,9 +386,8 @@ type MessageLogQuery struct {
 	Page     int
 	PerPage  int
 	Status   string
-	To       string
-	FromDate string
-	ToDate   string
+	Search   string
+	DateFrom time.Time
 }
 
 func (q MessageLogQuery) values() url.Values {
@@ -396,28 +395,31 @@ func (q MessageLogQuery) values() url.Values {
 	if q.Status != "" {
 		v.Set("status", q.Status)
 	}
-	if q.To != "" {
-		v.Set("to", q.To)
+	if q.Search != "" {
+		v.Set("search", q.Search)
 	}
-	if q.FromDate != "" {
-		v.Set("from_date", q.FromDate)
-	}
-	if q.ToDate != "" {
-		v.Set("to_date", q.ToDate)
+	if !q.DateFrom.IsZero() {
+		v.Set("date_from", q.DateFrom.UTC().Format(time.RFC3339))
 	}
 	return v
 }
 
 type MessageLog struct {
-	ID          string     `json:"id"`
-	Recipient   string     `json:"recipient"`
-	Message     string     `json:"message"`
-	Sender      string     `json:"sender"`
-	Status      string     `json:"status"`
-	CreditsUsed int        `json:"credits_used"`
-	CampaignID  *int       `json:"campaign_id"`
-	CreatedAt   time.Time  `json:"created_at"`
-	DeliveredAt *time.Time `json:"delivered_at"`
+	ID              string     `json:"id"`
+	ToPhone         string     `json:"to_phone"`
+	FromID          *string    `json:"from_id,omitempty"`
+	Message         string     `json:"message"`
+	Status          string     `json:"status"`
+	SMSParts        int        `json:"sms_parts"`
+	CreditsUsed     int        `json:"credits_used"`
+	CampaignID      *string    `json:"campaign_id,omitempty"`
+	IsInternational bool       `json:"is_international"`
+	CostAmount      *float64   `json:"cost_amount,omitempty"`
+	CostCurrency    *string    `json:"cost_currency,omitempty"`
+	ErrorReason     *string    `json:"error_reason,omitempty"`
+	SentAt          *time.Time `json:"sent_at,omitempty"`
+	DeliveredAt     *time.Time `json:"delivered_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 type MessageLogs struct {
 	Items      []MessageLog `json:"items"`
