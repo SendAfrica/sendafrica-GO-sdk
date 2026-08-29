@@ -125,8 +125,51 @@ func (e *APIError) IsUnauthorized() bool {
 	return e.StatusCode == http.StatusUnauthorized || e.Code == "unauthorized" || e.Code == "invalid_api_key"
 }
 
+func joinURL(base, path string) string {
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(path, "/")
+}
+
+// newRequest builds an HTTP request with the client's standard headers. When
+// body is non-nil it is JSON-encoded and sent as application/json.
+func (c *Client) newRequest(ctx context.Context, method, endpoint string, body any, ro RequestOptions) (*http.Request, error) {
+	var reader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("sendafrica: marshal request: %w", err)
+		}
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+	if err != nil {
+		return nil, fmt.Errorf("sendafrica: create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-Request-Id", newRequestID())
+	if c.userAgent != "" {
+		req.Header.Set("User-Agent", c.userAgent)
+	}
+	if c.bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearer)
+	} else {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
+	if ro.IdempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", ro.IdempotencyKey)
+	}
+	for key, values := range ro.Headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	return req, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, out any, ro RequestOptions) (*APIResponse, error) {
-	endpoint := strings.TrimRight(c.baseURL, "/") + "/" + strings.TrimLeft(path, "/")
+	endpoint := joinURL(c.baseURL, path)
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
 	}

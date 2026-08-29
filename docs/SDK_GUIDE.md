@@ -6,7 +6,7 @@ This guide is the authoritative developer reference for the initial `sendafrica-
 
 The SDK is intentionally small, dependency-free, and based entirely on Go’s standard library. It is suitable for backend services, command-line programs, scheduled workers, HTTP handlers, and test suites that need to send or reconcile SMS through SendAfrica.
 
-> **Important scope note:** The current implementation covers the highest-value API-key workflows: single SMS, bulk SMS, credits, message logs, payments, vouchers, phone utilities, and webhook verification. Contact lists, campaigns, notifications, registration, login, refresh-token rotation, and profile management are documented by SendAfrica but are not yet exposed as typed methods in this package.
+> **Scope note:** The client covers API-key and JWT workflows across the documented REST surface: single and bulk SMS, credits, message logs, payments, vouchers, health and international rates, auth/accounts (registration, login, refresh, OTP, OAuth, profile, API-key management), contact lists, campaigns, notifications, phone utilities, and webhook verification.
 
 ## 2. Product and API context
 
@@ -40,7 +40,13 @@ sendafrica-go/
 ├── go.mod
 ├── sendafrica.go
 ├── phone.go
+├── health.go
+├── auth.go
+├── contacts.go
+├── campaigns.go
+├── notifications.go
 ├── sendafrica_test.go
+├── new_endpoints_test.go
 ├── README.md
 ├── docs/
 │   └── SDK_GUIDE.md
@@ -589,9 +595,230 @@ type CreateVoucherRequest struct {
 
 The API documentation describes voucher orders as mobile-money flows requiring a verified phone number.[8] The SDK starts the order and returns its status; it does not poll or block until payment confirmation.
 
-## 11. Tanzania phone normalization
+## 11. Health check and international rates
 
-### 11.1 `NormalizeTZPhone`
+### 11.1 Health check
+
+```go
+func (c *Client) Health(ctx context.Context) (HealthStatus, error)
+```
+
+The health endpoint is unversioned and public. It never requires a credential and never retries:
+
+```text
+GET /health
+```
+
+```go
+state, err := client.Health(ctx)
+if err != nil || state.Status != "ok" {
+    // Flag the upstream service as degraded.
+}
+```
+
+### 11.2 International rates
+
+The international rate card is public and requires no authentication.
+
+```go
+func (c *Client) GetRates(ctx context.Context) ([]CountryRate, error)
+func (c *Client) GetCountryRate(ctx context.Context, country string) (CountryRate, error)
+```
+
+Routes:
+
+```text
+GET /v1/rates
+GET /v1/rates/{country}
+```
+
+`GetCountryRate` matches either an ISO2 code or a country name, case-insensitively. Unknown countries return an `*APIError`.
+
+```go
+rates, err := client.GetRates(ctx)
+for _, rate := range rates {
+    fmt.Printf("%s (%s): TZS %d/SMS\n", rate.Name, rate.DialCode, rate.RateTZS)
+}
+
+tz, err := client.GetCountryRate(ctx, "TZ")
+```
+
+The rate card is small and changes rarely; cache it client-side and treat the live endpoint as the source of truth.
+
+## 12. Auth and accounts
+
+The auth and accounts resource group covers registration, login, JWT refresh, OTP verification, password reset, OAuth exchange, profile management, and API-key rotation. Public endpoints (`Register`, `Login`, `Refresh`, OTP and OAuth methods) need no credential. JWT-protected methods (`Me`, `UpdateMe`, `Logout`, `ChangePassword`, phone OTP, API-key management) require a credential and are typically used with `WithBearerToken`.
+
+### 12.1 Registration and email verification
+
+```go
+reg, err := client.Register(ctx, sendafrica.RegisterRequest{
+    FirstName: "John",
+    LastName:  "Doe",
+    Email:     "john@example.com",
+    Password:  "a-strong-password-123",
+    Phone:     "0712345678",
+})
+if err != nil {
+    return err
+}
+```
+
+An optional phone is normalized before the request is sent. Registration sends an email OTP. Verify it before the first login:
+
+```go
+if err := client.SendVerificationEmail(ctx, reg.Email); err != nil {
+    return err
+}
+result, err := client.VerifyEmail(ctx, reg.Email, "482910")
+```
+
+`SendVerificationEmail` always returns 200 whether or not the address exists, to prevent email enumeration.
+
+### 12.2 Login, refresh, and logout
+
+```go
+auth, err := client.Login(ctx, "john@example.com", "password")
+fmt.Println(auth.AccessToken, auth.RefreshToken, auth.ExpiresIn)
+```
+
+`ExpiresIn` is seconds (900 = 15 minutes). The refresh token rotates on every use:
+
+```go
+pair, err := client.Refresh(ctx, auth.RefreshToken)
+// Always store pair.RefreshToken (it is a new value).
+```
+
+To act as a logged-in user, bind the access token to a client:
+
+```go
+session := sendafrica.NewClient("", sendafrica.WithBearerToken(auth.AccessToken))
+me, err := session.Me(ctx)
+```
+
+`Logout` blacklists the access token and revokes its refresh token.
+
+### 12.3 Password reset and OAuth
+
+```go
+if err := client.ResetPassword(ctx, "john@example.com"); err != nil { ... }
+if err := client.ResetPasswordConfirm(ctx, "john@example.com", "123456", "new-password"); err != nil { ... }
+```
+
+OAuth is a one-time exchange-code redemption that returns the same JWT pair as login:
+
+```go
+pair, err := client.OAuthExchange(ctx, "from-the-redirect")
+```
+
+### 12.4 Profile management
+
+```go
+profile, err := session.UpdateMe(ctx, sendafrica.UpdateProfileRequest{
+    FirstName: "Johnny",
+    Phone:     "0754000111",
+})
+```
+
+`SendPhoneOTP` and `VerifyPhone` handle phone verification through SMS for an authenticated account.
+
+### 12.5 API-key management
+
+```go
+key, err := session.CreateAPIKey(ctx, "production-server")
+// key.Key is returned exactly once and cannot be retrieved again.
+
+keys, err := session.ListAPIKeys(ctx)
+if err := session.DeleteAPIKey(ctx, key.ID); err != nil { ... }
+```
+
+Use `WithBearerToken` when creating keys from a JWT session, or manage them from a signed-in client.
+
+## 13. Contact lists
+
+Contact lists are dashboard-facing routes that use a credential. They power campaigns.
+
+```go
+list, err := client.CreateContactList(ctx, "Dar es Salaam customers")
+contact, err := client.AddContact(ctx, list.ID, sendafrica.CreateContactRequest{
+    FirstName: "Amina",
+    LastName:  "Juma",
+    Phone:     "0712345678",
+})
+```
+
+Contacts and extra numbers:
+
+```go
+contacts, err := client.ListContacts(ctx, list.ID, sendafrica.ContactQuery{Search: "Amina"})
+single, err := client.GetContact(ctx, list.ID, contact.ID)
+updated, err := client.UpdateContact(ctx, list.ID, contact.ID, sendafrica.CreateContactRequest{Phone: "0754000111"})
+if err := client.DeleteContact(ctx, list.ID, contact.ID); err != nil { ... }
+
+if err := client.AddContactPhone(ctx, list.ID, contact.ID, "0755000222"); err != nil { ... }
+if err := client.DeleteContactPhone(ctx, list.ID, contact.ID, phoneID); err != nil { ... }
+```
+
+Adding a phone that already exists in the same list returns a `409 duplicate_contact` error.
+
+CSV operations:
+
+```go
+csv, err := client.ExportContacts(ctx, list.ID) // returns raw []byte
+
+report, err := client.ImportContactsCSV(ctx, list.ID, csvData) // sends multipart/form-data
+fmt.Printf("imported=%d skipped=%d errors=%d\n", report.Imported, report.Skipped, len(report.Errors))
+```
+
+One-way Google Contacts sync:
+
+```go
+status, err := client.GetGoogleContactsStatus(ctx)
+if err := client.GoogleContactsSync(ctx); err != nil { ... }
+if err := client.GoogleContactsDisconnect(ctx); err != nil { ... }
+```
+
+## 14. Campaigns
+
+Campaigns schedule a bulk SMS against a contact list and track live per-recipient stats.
+
+```go
+campaign, err := client.CreateCampaign(ctx, sendafrica.CreateCampaignRequest{
+    Name:          "June Promo Blast",
+    Message:       "Mambo! Enjoy 20% off all weekend.",
+    ContactListID: 3,
+    ScheduledAt:   time.Now().Add(24 * time.Hour),
+    SenderID:      "MyBrand",
+}, sendafrica.RequestOptions{IdempotencyKey: "promo-june-launch"})
+```
+
+Only `draft` or `scheduled` campaigns can be cancelled; only campaigns that never sent anything can be deleted.
+
+```go
+detail, err := client.GetCampaign(ctx, campaign.ID)
+failed, err := client.ListCampaignRecipients(ctx, campaign.ID, sendafrica.RecipientQuery{Status: "failed"})
+
+if err := client.CancelCampaign(ctx, campaign.ID); err != nil { ... }
+if err := client.DeleteCampaign(ctx, campaign.ID); err != nil { ... }
+```
+
+A registered sender ID is recommended; an unregistered `SenderID` may be replaced by the platform fallback at the carrier boundary.
+
+## 15. Notifications
+
+Notifications are in-app alerts for low-balance, payment confirmations, campaign completions, and announcements.
+
+```go
+page, err := client.ListNotifications(ctx, sendafrica.PageQuery{Page: 1})
+count, err := client.UnreadNotificationCount(ctx)
+
+if err := client.MarkNotificationRead(ctx, page.Items[0].ID); err != nil { ... }
+if err := client.MarkAllNotificationsRead(ctx); err != nil { ... }
+```
+
+## 16. Tanzania phone normalization
+
+### 16.1 `NormalizeTZPhone`
 
 ```go
 func NormalizeTZPhone(phone string) (string, error)
@@ -624,7 +851,7 @@ if errors.Is(err, sendafrica.ErrInvalidPhone) {
 }
 ```
 
-### 11.2 `IsValidTZPhone`
+### 16.2 `IsValidTZPhone`
 
 ```go
 func IsValidTZPhone(phone string) bool
@@ -632,15 +859,15 @@ func IsValidTZPhone(phone string) bool
 
 This is a convenience predicate around `NormalizeTZPhone`. It returns `true` only when normalization succeeds and does not expose the normalized value.
 
-### 11.3 Method-level behavior
+### 16.3 Method-level behavior
 
 `SendSMS`, `SendBulkSMS`, `CreatePayment`, and `CreateVoucher` normalize phone inputs before making a network request. This prevents common formatting differences from reaching the API and avoids spending credits on a request that is locally known to be malformed.
 
 Bulk sends are rejected before the request is sent if any element of `To` fails normalization. Applications that need partial acceptance should normalize each number independently before building `BulkSMSRequest`.
 
-## 12. SMS encoding and part calculation
+## 17. SMS encoding and part calculation
 
-### 12.1 Encoding types
+### 17.1 Encoding types
 
 ```go
 type SMSEncoding string
@@ -659,7 +886,7 @@ func DetectEncoding(message string) SMSEncoding
 
 The utility classifies a message as GSM-7 when every character belongs to the supported GSM-7 basic or extension alphabet. Characters outside that set, including emoji, Arabic, Chinese, smart punctuation, and many other Unicode characters, switch the complete message to UCS-2.[9]
 
-### 12.2 Part information
+### 17.2 Part information
 
 ```go
 type SMSPartInfo struct {
@@ -694,9 +921,9 @@ fmt.Println(info.CreditsRequired) // 1
 
 An empty message reports zero parts and zero required credits. The API will still validate whether an empty message is acceptable when a send method is called.
 
-## 13. Webhook verification and parsing
+## 18. Webhook verification and parsing
 
-### 13.1 Security model
+### 18.1 Security model
 
 SendAfrica documents HMAC-SHA256 signatures in the `X-SendAfrica-Signature` header. The signature must be computed over the exact raw request body, not over a decoded and re-serialized JSON object. Whitespace and key-order changes can invalidate a signature.[10]
 
@@ -708,7 +935,7 @@ The safe processing order is:
 4. Only then parse the JSON event.
 5. Return a fast 2xx response and move slow business processing to a queue or worker.
 
-### 13.2 `VerifyWebhookSignature`
+### 18.2 `VerifyWebhookSignature`
 
 ```go
 func VerifyWebhookSignature(
@@ -738,7 +965,7 @@ if err := sendafrica.VerifyWebhookSignature(body, signature, secret); err != nil
 }
 ```
 
-### 13.3 `ParseWebhook`
+### 18.3 `ParseWebhook`
 
 ```go
 func ParseWebhook(
@@ -771,7 +998,7 @@ When the payload already contains a string `type`, that type is retained. For ga
 
 `MessageID` is read from `message_id`. If absent, an `id` beginning with `SA-` is used as a fallback. The full raw data map remains available because provider payloads may contain fields that are not yet modeled.
 
-### 13.4 HTTP handler example
+### 18.4 HTTP handler example
 
 ```go
 func webhookHandler(secret string) http.Handler {
@@ -806,7 +1033,7 @@ func webhookHandler(secret string) http.Handler {
 
 Webhook handlers should be idempotent. SendAfrica documents deduplication for gateway callbacks, but your own database update or queue consumer should still tolerate duplicate deliveries.
 
-## 14. Request options and headers
+## 19. Request options and headers
 
 ```go
 type RequestOptions struct {
@@ -831,7 +1058,7 @@ The client always sets:
 
 A new `X-Request-Id` is generated for each retry attempt. This gives every wire request a distinct trace identifier, while the returned `APIError.RequestID` reports the identifier returned by the server when available.
 
-## 15. Retry behavior
+## 20. Retry behavior
 
 The SDK retries the following conditions:
 
@@ -854,9 +1081,9 @@ client := sendafrica.NewClient(
 
 Retries are safe only when the operation is idempotent or the caller has supplied a deterministic idempotency key. A transport error does not prove that SendAfrica failed to receive or process a request. For SMS sends, always use an idempotency key when automatic retry is enabled in a business-critical path.[6]
 
-## 16. Error handling
+## 21. Error handling
 
-### 16.1 `APIError`
+### 21.1 `APIError`
 
 ```go
 type APIError struct {
@@ -887,7 +1114,7 @@ if err != nil {
 _ = result
 ```
 
-### 16.2 Classification helpers
+### 21.2 Classification helpers
 
 | Helper | Returns true when |
 | --- | --- |
@@ -914,7 +1141,7 @@ if err != nil {
 }
 ```
 
-### 16.3 Common documented error codes
+### 21.3 Common documented error codes
 
 | HTTP | Code | Typical response |
 | ---: | --- | --- |
@@ -932,7 +1159,7 @@ if err != nil {
 
 The stable `Code` string is the preferred value for application branching. Error messages may change wording.
 
-## 17. API key fingerprinting
+## 22. API key fingerprinting
 
 The package exposes:
 
@@ -949,7 +1176,7 @@ log.Printf("configured key fingerprint: %s", fingerprint)
 
 Even a hash can be sensitive in some threat models. Treat it as an operational identifier, not as a replacement for secret handling.
 
-## 18. Testing and local development
+## 23. Testing and local development
 
 The repository tests use `httptest.Server`, so they do not send real SMS, create payments, or call the production API. Run the complete verification suite with:
 
@@ -988,7 +1215,7 @@ client := sendafrica.NewClient(
 )
 ```
 
-## 19. Production operating guidance
+## 24. Production operating guidance
 
 Use a dedicated API key per environment or service where SendAfrica’s account controls permit it. Keep the key in a secret manager, rotate it without committing it to the repository, and avoid printing request headers in logs. Set an HTTP timeout and propagate request contexts from the surrounding job, HTTP request, or queue message.
 
@@ -1000,25 +1227,23 @@ For payments, treat `pending` as an intermediate state. The SDK initiates the mo
 
 For webhooks, verify signatures over the raw body, make consumers idempotent, respond quickly, and move slow work to a background queue. Do not trust the event type, message ID, or provider payload until signature verification succeeds.
 
-## 20. Current limitations and extension roadmap
+## 25. Current limitations and extension roadmap
 
 The client’s high-level methods return typed `data` values and errors. The current public API does not expose a separate result wrapper carrying successful-response metadata such as `request_id`, response timestamp, rate-limit headers, or the `Idempotent-Replay` header. Applications that require those values should use a future response-wrapper extension rather than relying on undocumented internals.
 
-The next resource groups can be added without changing the underlying HTTP design:
+The JWT mode currently requires callers to manage their own credentials with `WithBearerToken`. The SDK does not keep an in-memory token store or transparently rotate refresh tokens; applications should call `Login`/`Refresh` and feed the resulting access token back into a bearer-configured client.
+
+Remaining documented areas that are not yet exposed as typed methods:
 
 | Planned area | Documented routes |
 | --- | --- |
-| Auth and accounts | `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/me`, API-key management |
-| Contact lists | `/contact-lists/...` |
-| Campaigns | `/campaigns/...` |
-| Notifications | `/notifications/...` |
-| Sender IDs | Sender-ID management routes from the API reference |
-| Rates and packages | `/rates`, `/packages`, `/templates` |
+| Sender IDs | `/sender-ids/...` management routes from the API reference |
+| Packages and templates | `/packages`, `/templates` compose-UI data |
 | Agent API | `/agent/chat` |
 
 When extending the SDK, keep the existing conventions: accept `context.Context`, use typed request and response structs, preserve nullable API values with pointers where appropriate, normalize phone numbers before network calls, expose idempotency options on mutating methods, and return `*APIError` for server failures.
 
-## 21. Complete reference: exported API
+## 26. Complete reference: exported API
 
 The following table summarizes the current exported surface.
 
@@ -1077,6 +1302,78 @@ The following table summarizes the current exported surface.
 | `VerifyWebhookSignature` | Function | Verify HMAC-SHA256 signature |
 | `ParseWebhook` | Function | Verify and decode webhook payload |
 | `APIKeyHash` | Function | Compute local SHA-256 key fingerprint |
+| `HealthStatus` | Type | Health check response |
+| `Health` | Method | Check API health |
+| `CountryRate` | Type | Per-country rate card entry |
+| `GetRates` | Method | Fetch public international rate card |
+| `GetCountryRate` | Method | Fetch a single country rate |
+| `RegisterRequest` | Type | Account registration request |
+| `RegistrationResult` | Type | Registration response |
+| `Register` | Method | Create an account |
+| `LoginRequest` | Type | Login credentials |
+| `LoginResult` | Type | JWT pair and flags |
+| `Login` | Method | Log in and get a JWT pair |
+| `RefreshRequest` | Type | Refresh-token request |
+| `TokenPair` | Type | Rotated access/refresh pair |
+| `Refresh` | Method | Rotate a refresh token |
+| `VerifyEmailRequest` | Type | Email OTP verification |
+| `VerifyEmailResult` | Type | Email verification status |
+| `SendVerificationEmail` | Method | Trigger an email OTP |
+| `VerifyEmail` | Method | Confirm an email OTP |
+| `ResetPassword` | Method | Request a password-reset OTP |
+| `ResetPasswordConfirmRequest` | Type | Reset confirmation request |
+| `ResetPasswordConfirm` | Method | Confirm a password reset |
+| `OAuthExchange` | Method | Redeem an exchange code for tokens |
+| `UserProfile` | Type | Current user profile |
+| `Me` | Method | Fetch current profile |
+| `UpdateProfileRequest` | Type | Profile update request |
+| `UpdateMe` | Method | Update current profile |
+| `Logout` | Method | Revoke the active session |
+| `ChangePassword` | Method | Change account password |
+| `SendPhoneOTP` | Method | Trigger phone verification |
+| `VerifyPhone` | Method | Confirm a phone OTP |
+| `APIKey` | Type | API-key metadata |
+| `ListAPIKeys` | Method | List API-key metadata |
+| `CreateAPIKey` | Method | Create an API key |
+| `DeleteAPIKey` | Method | Revoke an API key |
+| `ContactList` | Type | Contact list |
+| `ListContactLists` | Method | List contact lists |
+| `CreateContactList` | Method | Create a contact list |
+| `Contact` | Type | Contact record |
+| `ContactQuery` | Type | Contact list query |
+| `ListContacts` | Method | List/search contacts |
+| `CreateContactRequest` | Type | Add/update contact request |
+| `AddContact` | Method | Add a contact to a list |
+| `GetContact` | Method | Fetch a contact |
+| `UpdateContact` | Method | Update a contact |
+| `DeleteContact` | Method | Delete a contact |
+| `AddContactPhone` | Method | Attach an additional number |
+| `DeleteContactPhone` | Method | Remove an additional number |
+| `ExportContacts` | Method | Export contacts as CSV |
+| `ImportError` | Type | CSV import row error |
+| `ImportResult` | Type | CSV import report |
+| `ImportContactsCSV` | Method | Bulk CSV import |
+| `GoogleContactsStatus` | Type | Google sync connection status |
+| `GetGoogleContactsStatus` | Method | Check Google sync connection |
+| `GoogleContactsSync` | Method | Trigger a Google sync |
+| `GoogleContactsDisconnect` | Method | Disconnect Google sync |
+| `CreateCampaignRequest` | Type | Campaign creation request |
+| `Campaign` | Type | Campaign with live stats |
+| `ListCampaigns` | Method | List campaigns |
+| `CreateCampaign` | Method | Create/schedule a campaign |
+| `GetCampaign` | Method | Fetch a campaign with stats |
+| `CancelCampaign` | Method | Cancel a draft/scheduled campaign |
+| `DeleteCampaign` | Method | Delete an unsent campaign |
+| `RecipientQuery` | Type | Recipient list query |
+| `CampaignRecipient` | Type | Per-recipient campaign result |
+| `ListCampaignRecipients` | Method | List per-recipient tracking |
+| `Notification` | Type | In-app notification |
+| `Notifications` | Type | Paginated notifications |
+| `ListNotifications` | Method | List notifications |
+| `UnreadCount` | Type | Unread badge count |
+| `UnreadNotificationCount` | Method | Fetch unread count |
+| `MarkNotificationRead` | Method | Mark one notification read |
+| `MarkAllNotificationsRead` | Method | Mark all notifications read |
 
 ## References
 

@@ -4,7 +4,7 @@ An idiomatic, dependency-free Go client for the [SendAfrica REST API](https://do
 
 ## Status
 
-This is an initial SDK implementation covering the highest-value developer workflows: single SMS, bulk SMS, balance and credit history, message logs, mobile-money payments and vouchers, phone utilities, and webhook helpers. The API documentation describes contact lists, campaigns, notifications, and account/JWT endpoints; those can be added as follow-on resource groups without changing the HTTP core.
+This SDK covers the full documented developer surface: single SMS, bulk SMS, balance and credit history, message logs, mobile-money payments and vouchers, health and international rates, auth/accounts (registration, login, JWT refresh, OTP, OAuth, profile, API-key management), contact lists, campaigns, notifications, phone utilities, and webhook helpers. The HTTP core is stable; remaining documented areas (sender-ID management, packages/templates, and the agent chat API) can be added as follow-on resource groups.
 
 For the full reference, see [`docs/SDK_GUIDE.md`](docs/SDK_GUIDE.md). It documents the public API, configuration options, request and response models, authentication, retries, idempotency, error handling, phone normalization, SMS encoding, webhook security, testing, production guidance, and extension points.
 
@@ -67,6 +67,26 @@ If the API key argument is empty, the client reads `SENDAFRICA_API_KEY`. The def
 | `GetVoucherRate` | `GET /vouchers/rate` | Public | Read voucher tier pricing |
 | `CreatePayment` | `POST /payments/` | API key or bearer token | Start a fixed-package mobile-money top-up |
 | `CreateVoucher` | `POST /vouchers/` | API key or bearer token | Start a pay-as-you-go top-up |
+| `Health` | `GET /health` | Public | Check API health |
+| `GetRates` / `GetCountryRate` | `GET /rates` / `GET /rates/{country}` | Public | Read the international rate card |
+| `Register` / `Login` / `Refresh` | `POST /auth/...` | Public | Account registration, login, JWT refresh rotation |
+| `VerifyEmail` / `SendVerificationEmail` | `POST /auth/...` | Public | Email OTP verification |
+| `ResetPassword` / `ResetPasswordConfirm` | `POST /auth/...` | Public | Password reset via OTP |
+| `OAuthExchange` | `POST /auth/oauth/exchange` | Public | Redeem an exchange code for a JWT pair |
+| `Me` / `UpdateMe` | `GET`/`PUT /auth/me` | Bearer token or API key | Read/update the current profile |
+| `Logout` / `ChangePassword` | `POST /auth/...` | Bearer token or API key | End session / change password |
+| `SendPhoneOTP` / `VerifyPhone` | `POST /auth/...` | Bearer token or API key | Phone verification via SMS |
+| `ListAPIKeys` / `CreateAPIKey` / `DeleteAPIKey` | `GET`/`POST`/`DELETE /auth/api-keys` | Bearer token or API key | Manage developer API keys |
+| `ListContactLists` / `CreateContactList` | `GET`/`POST /contact-lists/` | Bearer token or API key | Phonebook list CRUD |
+| `ListContacts` / `AddContact` / `GetContact` / `UpdateContact` / `DeleteContact` | `/contact-lists/{id}/contacts` | Bearer token or API key | Contact CRUD with search |
+| `AddContactPhone` / `DeleteContactPhone` | `/contact-lists/{id}/contacts/{cid}/phones` | Bearer token or API key | Attach/remove extra numbers |
+| `ExportContacts` / `ImportContactsCSV` | `/contact-lists/{id}/...` | Bearer token or API key | CSV export and bulk import |
+| `GetGoogleContactsStatus` / `GoogleContactsSync` / `GoogleContactsDisconnect` | `/contact-lists/google/...` | Bearer token or API key | One-way Google Contacts import |
+| `ListCampaigns` / `CreateCampaign` / `GetCampaign` | `/campaigns/...` | Bearer token or API key | Schedule and track campaigns |
+| `CancelCampaign` / `DeleteCampaign` | `/campaigns/{id}/...` | Bearer token or API key | Cancel/delete campaigns |
+| `ListCampaignRecipients` | `GET /campaigns/{id}/recipients` | Bearer token or API key | Per-recipient delivery tracking |
+| `ListNotifications` / `UnreadNotificationCount` | `GET /notifications/...` | Bearer token or API key | In-app notifications and badge |
+| `MarkNotificationRead` / `MarkAllNotificationsRead` | `/notifications/...` | Bearer token or API key | Mark notifications read |
 | `ParseWebhook` | local helper | Webhook secret | Verify HMAC-SHA256 and parse webhook payloads |
 
 ## Retries and idempotency
@@ -133,8 +153,8 @@ go test ./...
 go vet ./...
 ```
 
-The tests use `httptest.Server` and do not make network calls. They cover request serialization, phone normalization, retry behavior, API error classification, webhook HMAC verification, and SMS part calculation.
+The tests use `httptest.Server` and do not make network calls. They cover request serialization, phone normalization, retry behavior, API error classification, webhook HMAC verification, SMS part calculation, and every new resource group (health, rates, auth, contact lists, campaigns, and notifications).
 
 ## Documentation references
 
-The implementation follows the [API overview](https://docs.sendafrica.online/docs/api), [authentication guide](https://docs.sendafrica.online/docs/authentication), [SMS reference](https://docs.sendafrica.online/docs/api/sms), [errors and response format](https://docs.sendafrica.online/docs/errors), [rate limits and idempotency](https://docs.sendafrica.online/docs/rate-limits), [phone and SMS parts guide](https://docs.sendafrica.online/docs/phone-numbers), [credits reference](https://docs.sendafrica.online/docs/api/credits), [payments reference](https://docs.sendafrica.online/docs/api/payments), and [webhooks reference](https://docs.sendafrica.online/docs/api/webhooks).
+The implementation follows the [API overview](https://docs.sendafrica.online/docs/api), [authentication guide](https://docs.sendafrica.online/docs/authentication), [auth & accounts reference](https://docs.sendafrica.online/docs/api/auth), [SMS reference](https://docs.sendafrica.online/docs/api/sms), [errors and response format](https://docs.sendafrica.online/docs/errors), [rate limits and idempotency](https://docs.sendafrica.online/docs/rate-limits), [phone and SMS parts guide](https://docs.sendafrica.online/docs/phone-numbers), [credits reference](https://docs.sendafrica.online/docs/api/credits), [payments reference](https://docs.sendafrica.online/docs/api/payments), [contact lists reference](https://docs.sendafrica.online/docs/api/contacts), [campaigns reference](https://docs.sendafrica.online/docs/api/campaigns), [notifications reference](https://docs.sendafrica.online/docs/api/notifications), [SMS rates reference](https://docs.sendafrica.online/docs/api/rates), and [webhooks reference](https://docs.sendafrica.online/docs/api/webhooks).
