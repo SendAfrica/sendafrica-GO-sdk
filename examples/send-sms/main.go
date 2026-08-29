@@ -14,7 +14,6 @@ func main() {
 	result, err := client.SendSMS(context.Background(), sendafrica.SendSMSRequest{
 		To:      "0712345678",
 		Message: "Hello from SendAfrica!",
-		Sender:  "MyBrand",
 	}, sendafrica.RequestOptions{IdempotencyKey: "example-hello-1"})
 	if err != nil {
 		log.Fatal(err)
